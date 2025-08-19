@@ -5,6 +5,8 @@
 ---@field priority? number Optional priority for extmarks
 local M = {}
 
+M._initialized = false
+
 local function get_cursor_ln_fg()
   local hl = vim.api.nvim_get_hl(0, { name = 'CursorLineNr' })
   return hl.fg or 'NONE'
@@ -18,7 +20,6 @@ local defaults = {
 }
 
 local options = {}
-local initialized = false
 local ns_id = vim.api.nvim_create_namespace 'visual_line_numbers'
 
 local function update_highlights()
@@ -46,11 +47,6 @@ local function update_highlights()
 end
 
 local function init()
-  if initialized then
-    return
-  end
-  initialized = true
-
   local ok, err = pcall(function()
     vim.api.nvim_set_hl(0, options.highlight_group, { fg = options.fg, bg = options.bg })
   end)
@@ -89,6 +85,11 @@ end
 
 ---@param opts VisualLineNumbersOptions|{}
 M.setup = function(opts)
+  if M._initialized then
+    return
+  end
+  M._initialized = true
+
   options = vim.tbl_deep_extend('force', defaults, opts or {})
 
   vim.api.nvim_create_autocmd('ModeChanged', {

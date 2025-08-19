@@ -16,8 +16,6 @@ Highlight visually selected line numbers in Neovim.
 ```lua
 {
     'joncrangle/visual-lines.nvim',
-    event = { 'BufReadPre', 'BufNewFile' }, -- optional
-    opts = {},
 }
 ```
 
@@ -27,7 +25,6 @@ Highlight visually selected line numbers in Neovim.
 ```lua
 {
     'joncrangle/visual-lines.nvim',
-    event = { 'BufReadPre', 'BufNewFile' }, -- optional
     ---@type VisualLineNumbersOptions
     opts = {
         -- your configuration comes here
