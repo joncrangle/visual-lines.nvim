@@ -1,4 +1,5 @@
-*visual-lines.nvim.txt*          For Neovim         Last change: 2026 April 09
+*visual-lines.nvim.txt*
+                                       For Neovim    Last change: 2026 June 22
 
 ==============================================================================
 Table of Contents                        *visual-lines.nvim-table-of-contents*
