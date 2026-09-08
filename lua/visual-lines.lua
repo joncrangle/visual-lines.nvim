@@ -54,12 +54,9 @@ local defaults = {
 local options = {}
 local ns_id = api.nvim_create_namespace 'visual_line_numbers'
 
--- Track extmarks per line
-local active_marks = {} ---@type table<integer, integer>
+---@type table<integer, integer>
+local active_marks = {}
 
--- State cache
-local last_start = nil
-local last_end = nil
 local last_buf = nil
 
 -- Helpers ---------------------------------------------------------
@@ -68,49 +65,92 @@ local function get_fg()
   if options.fg then
     return options.fg
   end
-  local hl = api.nvim_get_hl(0, { name = 'CursorLineNr', link = false })
+
+  local hl = api.nvim_get_hl(0, {
+    name = 'CursorLineNr',
+    link = false,
+  })
+
   return hl.fg or 'NONE'
 end
 
 local function set_hl()
-  local ok, err = pcall(function()
-    api.nvim_set_hl(0, options.highlight_group, {
-      fg = get_fg(),
-      bg = options.bg,
-    })
-  end)
+  local ok, err = pcall(api.nvim_set_hl, 0, options.highlight_group, {
+    fg = get_fg(),
+    bg = options.bg,
+  })
 
   if not ok then
     vim.notify('Error setting highlight group: ' .. tostring(err), vim.log.levels.ERROR)
   end
 end
 
+---@param bufnr integer
 local function clear_marks(bufnr)
-  bufnr = bufnr or 0
+  if not api.nvim_buf_is_valid(bufnr) then
+    active_marks = {}
+    last_buf = nil
+    return
+  end
+
   api.nvim_buf_clear_namespace(bufnr, ns_id, 0, -1)
+
   active_marks = {}
-  last_start, last_end, last_buf = nil, nil, nil
+  last_buf = nil
 end
 
+---@param bufnr integer
+---@param line integer
 local function add_mark(bufnr, line)
+  if active_marks[line] then
+    return
+  end
+
   local id = api.nvim_buf_set_extmark(bufnr, ns_id, line - 1, 0, {
     number_hl_group = options.highlight_group,
     priority = options.priority,
   })
+
   active_marks[line] = id
 end
 
+---@param bufnr integer
+---@param line integer
 local function del_mark(bufnr, line)
   local id = active_marks[line]
-  if id then
-    pcall(api.nvim_buf_del_extmark, bufnr, ns_id, id)
-    active_marks[line] = nil
+
+  if not id then
+    return
   end
+
+  pcall(api.nvim_buf_del_extmark, bufnr, ns_id, id)
+  active_marks[line] = nil
 end
 
+---@param bufnr integer
+---@return boolean
 local function is_excluded(bufnr)
   local bo = vim.bo[bufnr]
-  return options.exclude_filetypes[bo.filetype] or options.exclude_buftypes[bo.buftype]
+
+  return options.exclude_filetypes[bo.filetype] == true or options.exclude_buftypes[bo.buftype] == true
+end
+
+---@return boolean
+local function is_visual_mode()
+  local mode = api.nvim_get_mode().mode
+  return mode == 'v' or mode == 'V' or mode == '\x16'
+end
+
+---@return integer, integer
+local function get_visual_range()
+  local start_line = vim.fn.line 'v'
+  local end_line = vim.fn.line '.'
+
+  if start_line > end_line then
+    start_line, end_line = end_line, start_line
+  end
+
+  return start_line, end_line
 end
 
 -- Core ------------------------------------------------------------
@@ -122,7 +162,6 @@ local function update_highlights()
 
   local bufnr = api.nvim_get_current_buf()
 
-  -- Handle excluded buffers (clear previous)
   if is_excluded(bufnr) then
     if last_buf then
       clear_marks(last_buf)
@@ -130,76 +169,78 @@ local function update_highlights()
     return
   end
 
-  local current_mode = api.nvim_get_mode().mode
-
-  -- Exit visual mode → clear
-  if not current_mode:match '[vV\x16]' then
+  if not is_visual_mode() then
     if last_buf then
       clear_marks(last_buf)
     end
     return
   end
 
-  local start_line = vim.fn.line 'v'
-  local end_line = vim.fn.line '.'
+  local start_line, end_line = get_visual_range()
+  local line_count = end_line - start_line + 1
 
-  if start_line > end_line then
-    start_line, end_line = end_line, start_line
-  end
-
-  -- Cap large selections
-  if (end_line - start_line) > options.max_lines then
+  if line_count > options.max_lines then
     if last_buf then
       clear_marks(last_buf)
     end
     return
   end
 
-  -- Buffer changed → full reset
-  if last_buf and bufnr ~= last_buf then
+  -- Selection moved to another buffer.
+  if last_buf and last_buf ~= bufnr then
     clear_marks(last_buf)
   end
 
-  -- First run → populate
-  if not last_start or not last_end then
-    for line = start_line, end_line do
-      add_mark(bufnr, line)
-    end
-  else
-    -- Remove lines no longer in range
-    for line = last_start, last_end do
-      if line < start_line or line > end_line then
-        del_mark(bufnr, line)
-      end
-    end
+  -- Remove only marks that are no longer part of the selection.
+  --
+  -- Iterating active_marks instead of the previous numeric range keeps the
+  -- bookkeeping tied to what we actually believe is currently decorated.
+  local marks_to_remove = {}
 
-    -- Add new lines
-    for line = start_line, end_line do
-      if not active_marks[line] then
-        add_mark(bufnr, line)
-      end
+  for line in pairs(active_marks) do
+    if line < start_line or line > end_line then
+      marks_to_remove[#marks_to_remove + 1] = line
     end
   end
 
-  -- Cache state
-  last_start = start_line
-  last_end = end_line
+  for _, line in ipairs(marks_to_remove) do
+    del_mark(bufnr, line)
+  end
+
+  -- Ensure every selected line has a mark.
+  --
+  -- Existing lines incur only a table lookup; extmarks are created only for
+  -- lines that have newly entered the selection.
+  for line = start_line, end_line do
+    if not active_marks[line] then
+      add_mark(bufnr, line)
+    end
+  end
+
   last_buf = bufnr
 end
 
 -- Public API ------------------------------------------------------
 
 function M.enable()
+  if is_enabled then
+    return
+  end
+
   is_enabled = true
   update_highlights()
 end
 
 function M.disable()
+  if not is_enabled then
+    return
+  end
+
   is_enabled = false
+
   if last_buf then
     clear_marks(last_buf)
   end
-  clear_marks(api.nvim_get_current_buf())
 end
 
 function M.toggle()
@@ -210,6 +251,7 @@ function M.toggle()
   end
 end
 
+---@param arg string
 function M.command(arg)
   if arg == 'enable' then
     M.enable()
@@ -218,15 +260,16 @@ function M.command(arg)
   elseif arg == 'toggle' then
     M.toggle()
   else
-    vim.notify('Invalid argument for VisualLineNumbers', vim.log.levels.ERROR)
+    vim.notify('Invalid argument for VisualLineNumbers: ' .. tostring(arg), vim.log.levels.ERROR)
   end
 end
 
----@param opts VisualLineNumbersOptions|{}
-M.setup = function(opts)
+---@param opts? VisualLineNumbersOptions
+function M.setup(opts)
   if M._initialized then
     return
   end
+
   M._initialized = true
 
   options = vim.tbl_deep_extend('force', defaults, opts or {})
@@ -235,7 +278,9 @@ M.setup = function(opts)
 
   set_hl()
 
-  local group = api.nvim_create_augroup('VisualLineNumbers', { clear = true })
+  local group = api.nvim_create_augroup('VisualLineNumbers', {
+    clear = true,
+  })
 
   api.nvim_create_autocmd('ColorScheme', {
     group = group,
@@ -250,7 +295,11 @@ M.setup = function(opts)
   api.nvim_create_autocmd('BufLeave', {
     group = group,
     callback = function(args)
-      clear_marks(args.buf)
+      if last_buf == args.buf then
+        clear_marks(args.buf)
+      else
+        api.nvim_buf_clear_namespace(args.buf, ns_id, 0, -1)
+      end
     end,
   })
 
